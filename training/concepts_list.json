@@ -1,0 +1,7 @@
+[
+    {
+        "instance_prompt": "pushblock",
+        "class_prompt": "",
+        "instance_data_dir": "/home/ethan/DiffusionResearch/sim2realSD/training/training_data"
+    }
+]
