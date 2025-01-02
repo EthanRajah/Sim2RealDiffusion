@@ -3,7 +3,6 @@ from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, UniPCM
 from diffusers.utils import load_image
 from controlnet_aux import PidiNetDetector
 import numpy as np
-import cv2
 from PIL import Image
 import argparse
 
