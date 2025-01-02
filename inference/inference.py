@@ -26,7 +26,7 @@ def controlnet_infer(img_path, model_id, output_path, prompt):
     # Prepare edge mask for softedge control net
     processor = PidiNetDetector.from_pretrained('lllyasviel/Annotators')
     edge_condition_image = processor(img, safe=True)
-    edge_condition_image.save("./images/control.png")
+    edge_condition_image.save(output_path + "softedge_mask.png")
 
     # Load tile and softedge control net models
     tile_control = ControlNetModel.from_pretrained('lllyasviel/control_v11f1e_sd15_tile', torch_dtype=torch.float16)
@@ -34,22 +34,22 @@ def controlnet_infer(img_path, model_id, output_path, prompt):
     controlnet = [tile_control, softedge_control]
 
     # Apply control net to sim2real model to generate pipeline
-    pipe = StableDiffusionControlNetPipeline.from_pretrained(model_id, controlnet=controlnet, torch_dtype=torch.float16, device='cuda')
+    pipe = StableDiffusionControlNetPipeline.from_pretrained(model_id, controlnet=controlnet, torch_dtype=torch.float16).to('cuda')
     # Reduce inference times by using a multistep scheduler
     pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
     pipe.enable_xformers_memory_efficient_attention()
 
     # Run inference using pipeline
-    generator = torch.Generator(device='cuda').manual_seed(0)
+    generator = torch.Generator(device='cpu').manual_seed(0)
     images = [tile_condition_img, edge_condition_image]
-    image = pipe(prompt, images, num_inference_steps=30, generator=generator).images[0]
-    image.save(output_path)
+    image = pipe(prompt, images, num_inference_steps=20, generator=generator, controlnet_conditioning_scale=[0.3, 0.5]).images[0]
+    image.save(output_path + "output.png")
 
-if __name__ == 'main':
+if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--img_path', type=str)
     parser.add_argument('--model_path', type=str)
-    parser.add_argument('--output_path', type=str)
+    parser.add_argument('--output_path', type=str, default='./')
     parser.add_argument('--prompt', type=str)
 
     args = parser.parse_args()
@@ -57,3 +57,4 @@ if __name__ == 'main':
     model_path = args.model_path
     output_path = args.output_path
     prompt = args.prompt
+    controlnet_infer(img_path, model_path, output_path, prompt)
