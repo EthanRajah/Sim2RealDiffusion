@@ -19,7 +19,7 @@ def resize_for_condition_image(input_image: Image, resolution: int):
     img = input_image.resize((W, H), resample=Image.LANCZOS)
     return img
 
-def controlnet_infer(input_path, model_id, output_dir, prompt, resolution):
+def controlnet_infer(input_path, model_id, output_dir, prompt):
     """
     Function to run inference on sim2real dreambooth model with tile and softedge control net.
     Supports passing a single image or a directory of images.
@@ -51,27 +51,22 @@ def controlnet_infer(input_path, model_id, output_dir, prompt, resolution):
     start = time()
     for img_path in image_paths:
         img = load_image(img_path)
-        tile_condition_img = resize_for_condition_image(img, resolution)
+        tile_condition_img = resize_for_condition_image(img, 64)
 
         # Prepare edge mask for softedge control net
         processor = PidiNetDetector.from_pretrained('lllyasviel/Annotators')
-        edge_condition_image = processor(img, safe=True, image_resolution=resolution, detect_resolution=resolution)
+        edge_condition_image = processor(img, safe=True)
 
         # Run inference using pipeline
         images = [tile_condition_img, edge_condition_image]
-        output_image = pipe(prompt, images, num_inference_steps=10, generator=generator, controlnet_conditioning_scale=[2.2, 2.2], guidance_scale=3.0).images[0] # 256 model. 256x256 resolution output versions
-        # output_image = pipe(prompt, images, num_inference_steps=10, generator=generator, controlnet_conditioning_scale=[1.2, 1.5], guidance_scale=4.5).images[0] # 512 model. 
+        output_latent = pipe(prompt, images, num_inference_steps=20, generator=generator, controlnet_conditioning_scale=[0.35, 1.35], guidance_scale=5.5, output_type="latent").images[0]
+        print(output_latent)
         
-        # Save the output image
-        base_name = os.path.splitext(os.path.basename(img_path))[0]
-        output_image.save(os.path.join(output_dir, f"{base_name}_gen.png"))
-
     print(f"Total time taken: {time() - start:.2f} seconds")
     print(f"Average time per image: {(time() - start) / len(image_paths):.2f} seconds")
     print(f"Inference completed. Results saved to {output_dir}")
 
 if __name__ == '__main__':
-    # Example: python3.10 inference.py --img_path "sim_pushblock.png" --model_path "model_v2/" --prompt "pushblock"
     parser = argparse.ArgumentParser()
     parser.add_argument('--img_path', type=str)
     parser.add_argument('--model_path', type=str)
@@ -86,4 +81,4 @@ if __name__ == '__main__':
     prompt = args.prompt
     resolution = args.resolution
 
-    controlnet_infer(img_path, model_path, output_path, prompt, resolution)
+    controlnet_infer(img_path, model_path, output_path, prompt)
