@@ -10,11 +10,15 @@ from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, UniPCM
 from controlnet_aux import PidiNetDetector
 
 class UnityGymPipeline:
-    def __init__(self, env_path, timesteps, diffusion_prompt, diffusion_model):
+    def __init__(self, env_path, timesteps, diffusion_prompt, diffusion_model, control_condition=[0.5, 0.5], guidance_scale=4.5, denoise=10, rl_resolution=64):
         self.env_path = env_path
         self.timesteps = timesteps
         self.diffusion_prompt = diffusion_prompt
         self.diffusion_model = diffusion_model
+        self.control_condition = control_condition
+        self.guidance_scale = guidance_scale
+        self.denoise = denoise
+        self.rl_res = rl_resolution
         self.env = None # Unity-Gym environment loaded in create_env()
     
     def create_env(self):
@@ -22,7 +26,7 @@ class UnityGymPipeline:
         unity_env = UnityEnvironment(self.env_path)
         gym_env = UnityToGymWrapper(unity_env)
         # Wrap the environment in a custom observation wrapper for diffusion inference and load pipeline
-        self.env = DiffusionPipeline(gym_env, self.diffusion_model, self.diffusion_prompt)
+        self.env = DiffusionPipeline(gym_env, self.diffusion_model, self.diffusion_prompt, self.control_condition, self.guidance_scale, self.denoise, self.rl_res)
 
     def _reset(self):
         """Reset the environment and return initial observation"""
@@ -39,16 +43,18 @@ class UnityGymPipeline:
         self.env.close()
     
 class DiffusionPipeline(gym.ObservationWrapper):
-    def __init__(self, env, model_id, prompt):
+    def __init__(self, env, model_id, prompt, control_condition, guidance_scale, denoise, rl_resolution):
         super().__init__(env)
         self.model = model_id
         self.prompt = prompt
+        self.control_condition = control_condition
+        self.guidance_scale = guidance_scale
+        self.denoise = denoise
+        self.rl_res = rl_resolution
         self.pipe = None
         self.generator = None
+        self.mask_processor = None
         
-        # Modify image observation space to reflect (H, W, C) format, maintaining normalized pixel values. Used for RL training.
-        obs_shape = self.observation_space.shape
-        self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=(obs_shape[1], obs_shape[2], obs_shape[0]), dtype=np.float16)
         # Initialize diffusion pipeline
         #self.initialiize_diffusion_pipeline()
 
@@ -82,6 +88,7 @@ class DiffusionPipeline(gym.ObservationWrapper):
         # Load tile and softedge control net models
         tile_control = ControlNetModel.from_pretrained('lllyasviel/control_v11f1e_sd15_tile', torch_dtype=torch.float16)
         softedge_control = ControlNetModel.from_pretrained('lllyasviel/control_v11p_sd15_softedge', torch_dtype=torch.float16)
+        self.mask_processor = PidiNetDetector.from_pretrained('lllyasviel/Annotators')
         controlnet = [tile_control, softedge_control]
         # Apply control net to sim2real model to generate pipeline
         self.generator = torch.Generator(device='cpu').manual_seed(0)
@@ -101,26 +108,49 @@ class DiffusionPipeline(gym.ObservationWrapper):
         W = int(round(W / 64.0)) * 64
         img = input_image.resize((W, H), resample=Image.LANCZOS)
         return img
+    
+    def post_process_image_output(self, output_image):
+        """Post process output image by resizing to lower resolution and converting to normalized numpy array"""
+        output_image = output_image.resize((self.rl_res, self.rl_res), resample=Image.LANCZOS)
+        output = np.array(output_image) / 255
+        output = np.transpose(output, (2, 0, 1))
+        return output
 
     def observation(self, obs):
         """
         Automatic processing function of incoming observations.
         Convert observation to (H, W, C) form, with 0-255 pixel values from normalized 0-1 values and transform to Image object for diffusion processing.
         """
+        # Preprocess Box observation to Image object
         obs = np.transpose(obs, (1, 2, 0))
         obs_img = (obs * 255).astype(np.uint8)
         obs_img = Image.fromarray(obs_img)
-        obs_img.save('observation.png')
-        return obs
-        
+        # Resample and resize image for tile control
+        resolution = obs_img.size[0]
+        tile_condition_img = self.resize_for_condition_image(obs_img, resolution)
+        # Generate PIDI edge mask for softedge control
+        edge_condition_image = self.mask_processor(obs_img, safe=True, image_resolution=resolution, detect_resolution=resolution)
+        # Run inference using pipeline
+        control_images = [tile_condition_img, edge_condition_image]
+        output_image = self.pipe(self.prompt, control_images, num_inference_steps=10, 
+                                 generator=self.generator, controlnet_conditioning_scale=self.control_condition, 
+                                 guidance_scale=self.guidance_scale).images[0]
+        # Post process output based on diffusion_type and return augmented observation
+        aug_obs = self.post_process_image_output(output_image)
+        return aug_obs
     
 if __name__ == '__main__':
-    env_path = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/rl_pipeline/PushBlockBuild/pushblock_solid.x86_64'
-    timesteps = 1000
+    env_path = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/rl_pipeline/PushBlockBuild/pushblock_solid.x86_64' # Linux path
+    # env_path = '/Users/ethan/Documents/Robotics/Thesis/DiffusionResearch/Sim2RealDiffusion/rl_pipeline/pushblock_solid.app' # Mac path
     diffusion_prompt = 'pushblock'
     diffusion_model = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/inference/solid_pushblock/model_v8/2000'
+    timesteps = 1000
+    control_condition = [1.2, 1.5]
+    guidance_scale = 4.5
+    denoise = 10
+    rl_resolution = 64
 
-    unity_pipeline = UnityGymPipeline(env_path, timesteps, diffusion_prompt, diffusion_model)
+    unity_pipeline = UnityGymPipeline(env_path, timesteps, diffusion_prompt, diffusion_model, control_condition, guidance_scale, denoise, rl_resolution)
     unity_pipeline.create_env()
     unity_pipeline._reset()
     unity_pipeline._step(unity_pipeline.env.action_space.sample().reshape(1, 2))
