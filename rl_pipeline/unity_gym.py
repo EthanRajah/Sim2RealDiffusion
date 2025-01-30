@@ -56,7 +56,7 @@ class DiffusionPipeline(gym.ObservationWrapper):
         self.mask_processor = None
         
         # Initialize diffusion pipeline
-        #self.initialiize_diffusion_pipeline()
+        self.initialiize_diffusion_pipeline()
 
     def reset(self, **kwargs):
         """Override reset to handle different Gym API versions"""
@@ -97,7 +97,7 @@ class DiffusionPipeline(gym.ObservationWrapper):
         self.pipe.scheduler = UniPCMultistepScheduler.from_config(self.pipe.scheduler.config)
         self.pipe.enable_xformers_memory_efficient_attention()
 
-    def resize_for_condition_image(input_image: Image, resolution: int):
+    def resize_for_condition_image(self, input_image: Image, resolution: int):
         """Resize input image to 64 multiple resolution for diffusion processing with ControlNet"""
         input_image = input_image.convert("RGB")
         W, H = input_image.size
@@ -112,7 +112,7 @@ class DiffusionPipeline(gym.ObservationWrapper):
     def post_process_image_output(self, output_image):
         """Post process output image by resizing to lower resolution and converting to normalized numpy array"""
         output_image = output_image.resize((self.rl_res, self.rl_res), resample=Image.LANCZOS)
-        output = np.array(output_image) / 255
+        output = np.array(output_image, dtype=np.float16) / 255
         output = np.transpose(output, (2, 0, 1))
         return output
 
@@ -125,6 +125,7 @@ class DiffusionPipeline(gym.ObservationWrapper):
         obs = np.transpose(obs, (1, 2, 0))
         obs_img = (obs * 255).astype(np.uint8)
         obs_img = Image.fromarray(obs_img)
+        obs_img.save('obs.png')
         # Resample and resize image for tile control
         resolution = obs_img.size[0]
         tile_condition_img = self.resize_for_condition_image(obs_img, resolution)
@@ -140,7 +141,7 @@ class DiffusionPipeline(gym.ObservationWrapper):
         return aug_obs
     
 if __name__ == '__main__':
-    env_path = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/rl_pipeline/PushBlockBuild/pushblock_solid.x86_64' # Linux path
+    env_path = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/rl_pipeline/PushBlockBuild_512/pushblock_solid.x86_64' # Linux path
     # env_path = '/Users/ethan/Documents/Robotics/Thesis/DiffusionResearch/Sim2RealDiffusion/rl_pipeline/pushblock_solid.app' # Mac path
     diffusion_prompt = 'pushblock'
     diffusion_model = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/inference/solid_pushblock/model_v8/2000'
