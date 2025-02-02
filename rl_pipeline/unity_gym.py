@@ -1,7 +1,9 @@
 from mlagents_envs.environment import UnityEnvironment
 from mlagents_envs.envs.unity_gym_env import UnityToGymWrapper
+from mlagents_envs.side_channel.engine_configuration_channel import EngineConfigurationChannel
 import gym
-import stable_baselines3.ppo.ppo as ppo
+from stable_baselines3 import PPO
+from gym.wrappers import monitoring
 import numpy as np
 import os
 import torch
@@ -10,9 +12,10 @@ from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, UniPCM
 from controlnet_aux import PidiNetDetector
 
 class UnityGymPipeline:
-    def __init__(self, env_path, timesteps, diffusion_prompt, diffusion_model, control_condition=[0.5, 0.5], guidance_scale=4.5, denoise=10, rl_resolution=64):
+    def __init__(self, env_path, timesteps, timescale, diffusion_prompt, diffusion_model, control_condition=[0.5, 0.5], guidance_scale=4.5, denoise=10, rl_resolution=64):
         self.env_path = env_path
         self.timesteps = timesteps
+        self.timescale = timescale
         self.diffusion_prompt = diffusion_prompt
         self.diffusion_model = diffusion_model
         self.control_condition = control_condition
@@ -28,6 +31,32 @@ class UnityGymPipeline:
         # Wrap the environment in a custom observation wrapper for diffusion inference and load pipeline
         self.env = DiffusionPipeline(gym_env, self.diffusion_model, self.diffusion_prompt, self.control_condition, self.guidance_scale, self.denoise, self.rl_res)
 
+    def train_ppo(self):
+        """Train a PPO model using the Unity-Gym environment"""
+        # Configure timescale for Unity environment
+        channel = EngineConfigurationChannel()
+        channel.set_configuration_parameters(time_scale = self.timescale)
+        # Create a monitoring wrapper for the environment
+        monitor_dump_dir = os.path.join(os.path.dirname(__file__), 'gym_monitor')
+        os.makedirs(monitor_dump_dir, exist_ok=True)
+        self.env = monitoring.Monitor(self.env, monitor_dump_dir, allow_early_resets=True)
+        # Train PPO model
+        model = PPO('CnnPolicy', self.env, verbose=1)
+        model.learn(total_timesteps=self.timesteps)
+        model.save("unity_model")
+        model = PPO.load("unity_model")
+        return model
+    
+    def inference(self, model):
+        """Use trained model to get Agent to perform task in Unity environment"""
+        obs = self._reset()
+        while True:
+            action, _states = model.predict(obs)
+            obs, reward, terminated, truncated, info = self._step(action)
+            if terminated:
+                break
+        self._close()
+
     def _reset(self):
         """Reset the environment and return initial observation"""
         obs= self.env.reset()
@@ -38,7 +67,7 @@ class UnityGymPipeline:
         obs, reward, terminated, truncated, info = self.env.step(action)
         return obs, reward, terminated, truncated, info
     
-    def close(self):
+    def _close(self):
         """Close the environment and release resources"""
         self.env.close()
     
@@ -125,7 +154,6 @@ class DiffusionPipeline(gym.ObservationWrapper):
         obs = np.transpose(obs, (1, 2, 0))
         obs_img = (obs * 255).astype(np.uint8)
         obs_img = Image.fromarray(obs_img)
-        obs_img.save('obs.png')
         # Resample and resize image for tile control
         resolution = obs_img.size[0]
         tile_condition_img = self.resize_for_condition_image(obs_img, resolution)
@@ -146,14 +174,16 @@ if __name__ == '__main__':
     diffusion_prompt = 'pushblock'
     diffusion_model = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/inference/solid_pushblock/model_v8/2000'
     timesteps = 1000
+    timescale = 4
     control_condition = [1.2, 1.5]
     guidance_scale = 4.5
     denoise = 10
     rl_resolution = 64
 
-    unity_pipeline = UnityGymPipeline(env_path, timesteps, diffusion_prompt, diffusion_model, control_condition, guidance_scale, denoise, rl_resolution)
+    unity_pipeline = UnityGymPipeline(env_path, timesteps, timescale, diffusion_prompt, diffusion_model, control_condition, guidance_scale, denoise, rl_resolution)
     unity_pipeline.create_env()
-    unity_pipeline._reset()
-    unity_pipeline._step(unity_pipeline.env.action_space.sample().reshape(1, 2))
-    unity_pipeline.close()
+    model = unity_pipeline.train_ppo()
+    # unity_pipeline._reset()
+    # unity_pipeline._step(unity_pipeline.env.action_space.sample().reshape(1, 2))
+    # unity_pipeline._close()
 
