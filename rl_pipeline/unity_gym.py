@@ -3,7 +3,7 @@ from mlagents_envs.envs.unity_gym_env import UnityToGymWrapper
 from mlagents_envs.side_channel.engine_configuration_channel import EngineConfigurationChannel
 import gym
 from stable_baselines3 import PPO
-from gym.wrappers import monitoring
+from stable_baselines3.common.monitor import Monitor
 import numpy as np
 import os
 import torch
@@ -26,20 +26,21 @@ class UnityGymPipeline:
     
     def create_env(self):
         """Create a Unity environment based on the class path and wrap it in a gym environment for training"""
-        unity_env = UnityEnvironment(self.env_path)
+        # Configure timescale for Unity environment
+        channel = EngineConfigurationChannel()
+        channel.set_configuration_parameters(time_scale = self.timescale)
+        # Create Unity environment and wrap it in a Gym environment
+        unity_env = UnityEnvironment(self.env_path, side_channels=[channel])
         gym_env = UnityToGymWrapper(unity_env)
         # Wrap the environment in a custom observation wrapper for diffusion inference and load pipeline
         self.env = DiffusionPipeline(gym_env, self.diffusion_model, self.diffusion_prompt, self.control_condition, self.guidance_scale, self.denoise, self.rl_res)
 
     def train_ppo(self):
         """Train a PPO model using the Unity-Gym environment"""
-        # Configure timescale for Unity environment
-        channel = EngineConfigurationChannel()
-        channel.set_configuration_parameters(time_scale = self.timescale)
         # Create a monitoring wrapper for the environment
         monitor_dump_dir = os.path.join(os.path.dirname(__file__), 'gym_monitor')
         os.makedirs(monitor_dump_dir, exist_ok=True)
-        self.env = monitoring.Monitor(self.env, monitor_dump_dir, allow_early_resets=True)
+        # self.env = Monitor(self.env, monitor_dump_dir, allow_early_resets=True)
         # Train PPO model
         model = PPO('CnnPolicy', self.env, verbose=1)
         model.learn(total_timesteps=self.timesteps)
@@ -64,8 +65,15 @@ class UnityGymPipeline:
     
     def _step(self, action):
         """Step through the environment with the given action and return observation, reward, terminated, truncated, info"""
-        obs, reward, terminated, truncated, info = self.env.step(action)
-        return obs, reward, terminated, truncated, info
+        result = self.env.step(action)
+        if len(result) == 4:
+            # Old Gym API
+            obs, reward, done, info = result
+            return obs, reward, done, False, info
+        else:
+            # New Gym API
+            obs, reward, terminated, truncated, info = result
+            return obs, reward, terminated, truncated, info
     
     def _close(self):
         """Close the environment and release resources"""
@@ -86,6 +94,8 @@ class DiffusionPipeline(gym.ObservationWrapper):
         
         # Initialize diffusion pipeline
         self.initialiize_diffusion_pipeline()
+        # Set observation space to RL resolution and image format
+        self.observation_space = gym.spaces.Box(low=0, high=255, shape=(3, self.rl_res, self.rl_res), dtype=np.uint8)
 
     def reset(self, **kwargs):
         """Override reset to handle different Gym API versions"""
@@ -105,7 +115,8 @@ class DiffusionPipeline(gym.ObservationWrapper):
         else:
             # New Gym API: obs, reward, terminated, truncated, info
             obs, reward, terminated, truncated, info = result
-            return self.observation(obs), reward, terminated, truncated, info
+            done = terminated or truncated
+            return self.observation(obs), reward, done, False, info
 
     def initialiize_diffusion_pipeline(self):
         """
@@ -139,10 +150,9 @@ class DiffusionPipeline(gym.ObservationWrapper):
         return img
     
     def post_process_image_output(self, output_image):
-        """Post process output image by resizing to lower resolution and converting to normalized numpy array"""
+        """Post process output image by resizing to lower resolution and converting to CxHxW image format to match observation_space"""
         output_image = output_image.resize((self.rl_res, self.rl_res), resample=Image.LANCZOS)
-        output = np.array(output_image, dtype=np.float16) / 255
-        output = np.transpose(output, (2, 0, 1))
+        output = np.array(output_image).transpose(2, 0, 1).astype(np.uint8)
         return output
 
     def observation(self, obs):
@@ -185,5 +195,5 @@ if __name__ == '__main__':
     model = unity_pipeline.train_ppo()
     # unity_pipeline._reset()
     # unity_pipeline._step(unity_pipeline.env.action_space.sample().reshape(1, 2))
-    # unity_pipeline._close()
+    unity_pipeline._close()
 
