@@ -3,7 +3,6 @@ from mlagents_envs.envs.unity_gym_env import UnityToGymWrapper
 from mlagents_envs.side_channel.engine_configuration_channel import EngineConfigurationChannel
 import gym
 from stable_baselines3 import PPO
-from stable_baselines3.common.monitor import Monitor
 import numpy as np
 import os
 import torch
@@ -12,17 +11,32 @@ from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, UniPCM
 from controlnet_aux import PidiNetDetector
 
 class UnityGymPipeline:
-    def __init__(self, env_path, timesteps, timescale, diffusion_prompt, diffusion_model, control_condition=[0.5, 0.5], guidance_scale=4.5, denoise=10, rl_resolution=64):
+    def __init__(self, env_path, timesteps, timescale, diffusion_prompt, diffusion_model, out_type='img', control_condition=[0.5, 0.5], guidance_scale=4.5, denoise=10, rl_resolution=64, log_dir='logs'):
         self.env_path = env_path
         self.timesteps = timesteps
         self.timescale = timescale
         self.diffusion_prompt = diffusion_prompt
         self.diffusion_model = diffusion_model
+        self.out_type = out_type # Can either be 'img' or 'latent' for diffusion output
         self.control_condition = control_condition
         self.guidance_scale = guidance_scale
         self.denoise = denoise
         self.rl_res = rl_resolution
+        self.log_dir = log_dir
         self.env = None # Unity-Gym environment loaded in create_env()
+
+        # Validate input parameters
+        if self.out_type not in ['img', 'latent']:
+            raise ValueError("Invalid output type. Must be 'img' or 'latent'")
+        if not os.path.exists(self.diffusion_model):
+            raise FileNotFoundError(f"Diffusion model not found at {self.diffusion_model}")
+        if not os.path.exists(self.env_path):
+            raise FileNotFoundError(f"Unity environment not found at {self.env_path}")
+        if not os.path.exists(self.log_dir):
+            if self.log_dir is not None:
+                os.makedirs(self.log_dir, exist_ok=True)
+            else:
+                raise FileNotFoundError(f"Log directory not found at {self.log_dir}")
     
     def create_env(self):
         """Create a Unity environment based on the class path and wrap it in a gym environment for training"""
@@ -33,19 +47,20 @@ class UnityGymPipeline:
         unity_env = UnityEnvironment(self.env_path, side_channels=[channel])
         gym_env = UnityToGymWrapper(unity_env)
         # Wrap the environment in a custom observation wrapper for diffusion inference and load pipeline
-        self.env = DiffusionPipeline(gym_env, self.diffusion_model, self.diffusion_prompt, self.control_condition, self.guidance_scale, self.denoise, self.rl_res)
+        self.env = DiffusionPipeline(gym_env, self.diffusion_model, self.diffusion_prompt, self.out_type, self.control_condition, self.guidance_scale, self.denoise, self.rl_res, self.log_dir)
 
     def train_ppo(self):
         """Train a PPO model using the Unity-Gym environment"""
         # Create a monitoring wrapper for the environment
-        monitor_dump_dir = os.path.join(os.path.dirname(__file__), 'gym_monitor')
+        monitor_dump_dir = os.path.join(self.log_dir, f'ppo_{self.diffusion_prompt}_tensorboard')
         os.makedirs(monitor_dump_dir, exist_ok=True)
-        # self.env = Monitor(self.env, monitor_dump_dir, allow_early_resets=True)
         # Train PPO model
-        model = PPO('CnnPolicy', self.env, verbose=1)
-        model.learn(total_timesteps=self.timesteps)
-        model.save("unity_model")
-        model = PPO.load("unity_model")
+        # Set n_steps to 1 for single step training - useful for initial testing
+        model = PPO('CnnPolicy', self.env, verbose=1, tensorboard_log=monitor_dump_dir)
+        model.learn(total_timesteps=self.timesteps, progress_bar=True)
+        model_save = os.path.join(self.log_dir, 'unity_model')
+        model.save(model_save)
+        model = PPO.load(model_save)
         return model
     
     def inference(self, model):
@@ -80,14 +95,17 @@ class UnityGymPipeline:
         self.env.close()
     
 class DiffusionPipeline(gym.ObservationWrapper):
-    def __init__(self, env, model_id, prompt, control_condition, guidance_scale, denoise, rl_resolution):
+    def __init__(self, env, model_id, prompt, out_type, control_condition, guidance_scale, denoise, rl_resolution, log_dir):
         super().__init__(env)
         self.model = model_id
         self.prompt = prompt
+        self.out_type = out_type
         self.control_condition = control_condition
         self.guidance_scale = guidance_scale
         self.denoise = denoise
         self.rl_res = rl_resolution
+        self.log_dir = log_dir
+        # Diffusion parameters to be set on initialization
         self.pipe = None
         self.generator = None
         self.mask_processor = None
@@ -95,7 +113,11 @@ class DiffusionPipeline(gym.ObservationWrapper):
         # Initialize diffusion pipeline
         self.initialiize_diffusion_pipeline()
         # Set observation space to RL resolution and image format
-        self.observation_space = gym.spaces.Box(low=0, high=255, shape=(3, self.rl_res, self.rl_res), dtype=np.uint8)
+        if self.out_type == 'img':
+            self.observation_space = gym.spaces.Box(low=0, high=255, shape=(3, self.rl_res, self.rl_res), dtype=np.uint8)
+        else:
+            # Shape based on UNet latent output shape for SD model
+            self.observation_space = gym.spaces.Box(low=0, high=1, shape=(4, 64, 96), dtype=torch.float16)
 
     def reset(self, **kwargs):
         """Override reset to handle different Gym API versions"""
@@ -151,9 +173,12 @@ class DiffusionPipeline(gym.ObservationWrapper):
     
     def post_process_image_output(self, output_image):
         """Post process output image by resizing to lower resolution and converting to CxHxW image format to match observation_space"""
-        output_image = output_image.resize((self.rl_res, self.rl_res), resample=Image.LANCZOS)
-        output = np.array(output_image).transpose(2, 0, 1).astype(np.uint8)
-        return output
+        if self.out_type == 'img':
+            output_image = output_image.resize((self.rl_res, self.rl_res), resample=Image.LANCZOS)
+            post_output = np.array(output_image).transpose(2, 0, 1).astype(np.uint8)
+            return post_output
+        else:
+            return output_image
 
     def observation(self, obs):
         """
@@ -171,26 +196,43 @@ class DiffusionPipeline(gym.ObservationWrapper):
         edge_condition_image = self.mask_processor(obs_img, safe=True, image_resolution=resolution, detect_resolution=resolution)
         # Run inference using pipeline
         control_images = [tile_condition_img, edge_condition_image]
-        output_image = self.pipe(self.prompt, control_images, num_inference_steps=10, 
-                                 generator=self.generator, controlnet_conditioning_scale=self.control_condition, 
-                                 guidance_scale=self.guidance_scale).images[0]
-        # Post process output based on diffusion_type and return augmented observation
+        if self.out_type == 'latent':
+            # Return latent output for RL training. This is pre-decoded from the diffusion model.
+            output_image = self.pipe(self.prompt, control_images, num_inference_steps=10, 
+                                     generator=self.generator, controlnet_conditioning_scale=self.control_condition, 
+                                     guidance_scale=self.guidance_scale, output_type="latent").images[0]
+        else:
+            # Return decoded image output for RL training
+            output_image = self.pipe(self.prompt, control_images, num_inference_steps=10, 
+                                    generator=self.generator, controlnet_conditioning_scale=self.control_condition, 
+                                    guidance_scale=self.guidance_scale).images[0]
+        # Post process output based on out_type and return augmented observation
         aug_obs = self.post_process_image_output(output_image)
+        # Save observation image for validation
+        # self.save_obs_img(aug_obs, self.log_dir)
         return aug_obs
     
+    def save_obs_img(self, obs, dir):
+        """Save observation image to log directory for validation"""
+        obs_img = Image.fromarray(obs.transpose(1, 2, 0))
+        # Images saved as num.png for easy sorting
+        obs_img.save(os.path.join(dir, f"{len(os.listdir(dir))}.png"))
+    
 if __name__ == '__main__':
-    env_path = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/rl_pipeline/PushBlockBuild_512/pushblock_solid.x86_64' # Linux path
+    env_path = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/rl_pipeline/PushBlockBuild_512DR/pushblock_solid_dr.x86_64' # Linux path
     # env_path = '/Users/ethan/Documents/Robotics/Thesis/DiffusionResearch/Sim2RealDiffusion/rl_pipeline/pushblock_solid.app' # Mac path
     diffusion_prompt = 'pushblock'
     diffusion_model = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/inference/solid_pushblock/model_v8/2000'
-    timesteps = 1000
+    log_dir = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/rl_pipeline/test1'
+    out_type = 'img'
+    timesteps = 1000000
     timescale = 4
     control_condition = [1.2, 1.5]
     guidance_scale = 4.5
     denoise = 10
     rl_resolution = 64
 
-    unity_pipeline = UnityGymPipeline(env_path, timesteps, timescale, diffusion_prompt, diffusion_model, control_condition, guidance_scale, denoise, rl_resolution)
+    unity_pipeline = UnityGymPipeline(env_path, timesteps, timescale, diffusion_prompt, diffusion_model, out_type, control_condition, guidance_scale, denoise, rl_resolution, log_dir)
     unity_pipeline.create_env()
     model = unity_pipeline.train_ppo()
     # unity_pipeline._reset()
