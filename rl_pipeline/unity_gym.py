@@ -2,6 +2,10 @@ from mlagents_envs.environment import UnityEnvironment
 from mlagents_envs.envs.unity_gym_env import UnityToGymWrapper
 from mlagents_envs.side_channel.engine_configuration_channel import EngineConfigurationChannel
 import gym
+from shimmy import GymV21CompatibilityV0
+from gymnasium.utils.step_api_compatibility import convert_to_terminated_truncated_step_api
+from gymnasium.core import ActType
+from typing import Any
 from stable_baselines3 import PPO
 import numpy as np
 import os
@@ -217,6 +221,21 @@ class DiffusionPipeline(gym.ObservationWrapper):
         obs_img = Image.fromarray(obs.transpose(1, 2, 0))
         # Images saved as num.png for easy sorting
         obs_img.save(os.path.join(dir, f"{len(os.listdir(dir))}.png"))
+
+class GymV21Compatibility(GymV21CompatibilityV0):
+    def step(self, action: ActType) -> tuple[Any, float, bool, bool, dict]:
+        """Modified step function from Shimmy openai_gym_compatibility.py script to handle terminated and truncated flags"""
+        result = self.gym_env.step(action)
+        if len(result) == 4:
+            obs, reward, done, info = result
+            terminated = False
+            truncated = False
+        else:
+            obs, reward, terminated, truncated, info = result
+            done = terminated or truncated
+        if self.render_mode is not None:
+            self.render()
+        return convert_to_terminated_truncated_step_api((obs, reward, done, info))
     
 if __name__ == '__main__':
     env_path = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/rl_pipeline/PushBlockBuild_512DR/pushblock_solid_dr.x86_64' # Linux path
