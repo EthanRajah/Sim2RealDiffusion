@@ -1,6 +1,8 @@
 from mlagents_envs.environment import UnityEnvironment
 from mlagents_envs.envs.unity_gym_env import UnityToGymWrapper
 from mlagents_envs.side_channel.engine_configuration_channel import EngineConfigurationChannel
+from mlagents_envs.side_channel.environment_parameters_channel import EnvironmentParametersChannel
+from mlagents.trainers.cli_utils import load_config
 import gym
 from shimmy import GymV21CompatibilityV0
 from gymnasium.utils.step_api_compatibility import convert_to_terminated_truncated_step_api
@@ -15,8 +17,9 @@ from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, UniPCM
 from controlnet_aux import PidiNetDetector
 
 class UnityGymPipeline:
-    def __init__(self, env_path, timesteps, timescale, diffusion_prompt, diffusion_model, out_type='img', control_condition=[0.5, 0.5], guidance_scale=4.5, denoise=10, rl_resolution=64, log_dir='logs'):
+    def __init__(self, env_path, yaml_path, timesteps, timescale, diffusion_prompt, diffusion_model, out_type='img', control_condition=[0.5, 0.5], guidance_scale=4.5, denoise=10, rl_resolution=64, log_dir='logs'):
         self.env_path = env_path
+        self.yaml_config = yaml_path
         self.timesteps = timesteps
         self.timescale = timescale
         self.diffusion_prompt = diffusion_prompt
@@ -28,6 +31,7 @@ class UnityGymPipeline:
         self.rl_res = rl_resolution
         self.log_dir = log_dir
         self.env = None # Unity-Gym environment loaded in create_env()
+        self.seed = 499 # Seed for domain randomization
 
         # Validate input parameters
         if self.out_type not in ['img', 'latent']:
@@ -36,6 +40,8 @@ class UnityGymPipeline:
             raise FileNotFoundError(f"Diffusion model not found at {self.diffusion_model}")
         if not os.path.exists(self.env_path):
             raise FileNotFoundError(f"Unity environment not found at {self.env_path}")
+        if not os.path.exists(self.yaml_config):
+            raise FileNotFoundError(f"YAML configuration not found at {self.yaml_config}")
         if not os.path.exists(self.log_dir):
             if self.log_dir is not None:
                 os.makedirs(self.log_dir, exist_ok=True)
@@ -44,12 +50,34 @@ class UnityGymPipeline:
     
     def create_env(self):
         """Create a Unity environment based on the class path and wrap it in a gym environment for training"""
+        # Load YAML configuration for Unity environment to be used for domain randomization
+        config = load_config(self.yaml_config)
         # Configure timescale for Unity environment
         channel = EngineConfigurationChannel()
         channel.set_configuration_parameters(time_scale = self.timescale)
+        # Configure domain randomization parameters for Unity environment
+        param_channel = EnvironmentParametersChannel()
+        for k, v in config.items():
+            if k == 'environment_parameters':
+                for k2, v2 in v.items():
+                    # Ensure that sampler_type and sampler_parameters are present in the YAML configuration
+                    if 'sampler_type' not in v2 or 'sampler_parameters' not in v2:
+                        raise ValueError("Invalid YAML configuration. Must have 'sampler_type' and 'sampler_parameters' keys.")
+                    print(f"Setting parameter {k2} to {v2}...")
+                    if v2['sampler_type'] == 'uniform':
+                        # Check if min and max values are present. If so use set_uniform_sampler_parameters from mlagents
+                        if 'min_value' in v2['sampler_parameters'] and 'max_value' in v2['sampler_parameters']:
+                            param_channel.set_uniform_sampler_parameters(k2, v2['sampler_parameters']['min_value'], v2['sampler_parameters']['max_value'], self.seed)
+                        else:
+                            param_channel.set_float_parameter(k2, v2['sampler_parameters']['value'])
+                    else:
+                        raise Warning("Parameter not being set for domain randomization. Only uniform sampler type is supported.")
+            else:
+                raise Warning("No environment parameters found in YAML configuration. Domain randomization will not be applied.")
         # Create Unity environment and wrap it in a Gym environment
-        unity_env = UnityEnvironment(self.env_path, side_channels=[channel])
+        unity_env = UnityEnvironment(self.env_path, side_channels=[channel, param_channel])
         gym_env = UnityToGymWrapper(unity_env)
+        gym_env.close()
         # Wrap the environment in a custom observation wrapper for diffusion inference and load pipeline
         self.env = DiffusionPipeline(gym_env, self.diffusion_model, self.diffusion_prompt, self.out_type, self.control_condition, self.guidance_scale, self.denoise, self.rl_res, self.log_dir)
 
@@ -240,6 +268,7 @@ class GymV21Compatibility(GymV21CompatibilityV0):
 if __name__ == '__main__':
     env_path = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/rl_pipeline/PushBlockBuild_512DR/pushblock_solid_dr.x86_64' # Linux path
     # env_path = '/Users/ethan/Documents/Robotics/Thesis/DiffusionResearch/Sim2RealDiffusion/rl_pipeline/pushblock_solid.app' # Mac path
+    yaml_path = '/Users/ethan/Documents/Robotics/Thesis/MEDCVR_Unity/medcvr_localsims/dvrk_mlagents/unity_project/Assets/Tasks/PushBlock/Scripts/DiffusionPushBlock.yaml'
     diffusion_prompt = 'pushblock'
     diffusion_model = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/inference/solid_pushblock/model_v8/2000'
     log_dir = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/rl_pipeline/test1'
@@ -251,7 +280,7 @@ if __name__ == '__main__':
     denoise = 10
     rl_resolution = 64
 
-    unity_pipeline = UnityGymPipeline(env_path, timesteps, timescale, diffusion_prompt, diffusion_model, out_type, control_condition, guidance_scale, denoise, rl_resolution, log_dir)
+    unity_pipeline = UnityGymPipeline(env_path, yaml_path, timesteps, timescale, diffusion_prompt, diffusion_model, out_type, control_condition, guidance_scale, denoise, rl_resolution, log_dir)
     unity_pipeline.create_env()
     model = unity_pipeline.train_ppo()
     # unity_pipeline._reset()
