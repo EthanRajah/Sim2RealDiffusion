@@ -9,6 +9,8 @@ from gymnasium.utils.step_api_compatibility import convert_to_terminated_truncat
 from gymnasium.core import ActType
 from typing import Any
 from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.logger import configure
 import numpy as np
 import os
 import torch
@@ -81,22 +83,36 @@ class UnityGymPipeline:
         # Wrap the environment in a custom observation wrapper for diffusion inference and load pipeline
         self.env = DiffusionPipeline(gym_env, self.diffusion_model, self.diffusion_prompt, self.out_type, self.control_condition, self.guidance_scale, self.denoise, self.rl_res, self.log_dir)
 
-    def train_ppo(self):
+    def train_ppo(self, resume=False):
         """Train a PPO model using the Unity-Gym environment"""
         # Create a monitoring wrapper for the environment
         monitor_dump_dir = os.path.join(self.log_dir, f'ppo_{self.diffusion_prompt}_tensorboard')
         os.makedirs(monitor_dump_dir, exist_ok=True)
-        # Train PPO model
+        # Configure training for the PPO model
+        checkpoint_callback = CheckpointCallback(save_freq=5000, save_path=self.log_dir, name_prefix="unity_rl_ckpt", save_replay_buffer=True, save_vecnormalize=True, verbose=1)
         # Set n_steps to 1 for single step training - useful for initial testing
-        model = PPO('CnnPolicy', self.env, verbose=1, tensorboard_log=monitor_dump_dir)
-        model.learn(total_timesteps=self.timesteps, progress_bar=True)
+        if not resume:
+            model = PPO('CnnPolicy', self.env, verbose=1, tensorboard_log=monitor_dump_dir)
+        else:
+            # Resume training from latest checkpoint
+            ckpt_files = [f for f in os.listdir(self.log_dir) if 'unity_rl_ckpt' in f]
+            if len(ckpt_files) == 0:
+                raise FileNotFoundError("No checkpoint files found in log directory to resume from.")
+            latest_ckpt = max(ckpt_files, key=os.path.getctime)
+            model = PPO.load(os.path.join(self.log_dir, latest_ckpt), env=self.env)
+            # Load logger object for tensorboard logging
+            logger = configure(monitor_dump_dir, ['tensorboard'])
+            model.set_logger(logger)
+        # Train model
+        model.learn(total_timesteps=self.timesteps, progress_bar=True, callback=checkpoint_callback)
+        # Save model
         model_save = os.path.join(self.log_dir, 'unity_model')
         model.save(model_save)
-        model = PPO.load(model_save)
         return model
     
-    def inference(self, model):
+    def inference(self):
         """Use trained model to get Agent to perform task in Unity environment"""
+        model = PPO.load(os.path.join(self.log_dir, 'unity_model'))
         obs = self._reset()
         while True:
             action, _states = model.predict(obs)
