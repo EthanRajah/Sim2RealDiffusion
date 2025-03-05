@@ -4,7 +4,7 @@ from mlagents_envs.side_channel.engine_configuration_channel import EngineConfig
 from mlagents_envs.side_channel.environment_parameters_channel import EnvironmentParametersChannel
 from mlagents.trainers.cli_utils import load_config
 import gym
-from shimmy import GymV21CompatibilityV0
+import shimmy
 from gymnasium.utils.step_api_compatibility import convert_to_terminated_truncated_step_api
 from gymnasium.core import ActType
 from typing import Any
@@ -12,6 +12,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.logger import configure
 import numpy as np
+import argparse
 import os
 import torch
 from PIL import Image
@@ -19,7 +20,7 @@ from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, UniPCM
 from controlnet_aux import PidiNetDetector
 
 class UnityGymPipeline:
-    def __init__(self, env_path, yaml_path, timesteps, timescale, diffusion_prompt, diffusion_model, out_type='img', control_condition=[0.5, 0.5], guidance_scale=4.5, denoise=10, rl_resolution=64, log_dir='logs'):
+    def __init__(self, env_path, yaml_path, timesteps, timescale, diffusion_prompt, diffusion_model, base_port, out_type='img', control_condition=[0.5, 0.5], guidance_scale=4.5, denoise=10, rl_resolution=64, log_dir='logs'):
         self.env_path = env_path
         self.yaml_config = yaml_path
         self.timesteps = timesteps
@@ -32,6 +33,7 @@ class UnityGymPipeline:
         self.denoise = denoise
         self.rl_res = rl_resolution
         self.log_dir = log_dir
+        self.base_port = base_port
         self.env = None # Unity-Gym environment loaded in create_env()
         self.seed = 499 # Seed for domain randomization
 
@@ -49,6 +51,9 @@ class UnityGymPipeline:
                 os.makedirs(self.log_dir, exist_ok=True)
             else:
                 raise FileNotFoundError(f"Log directory not found at {self.log_dir}")
+        
+        # Override OpenAI Gym compatibility for step function changes
+        shimmy.GymV21CompatibilityV0 = GymV21Compatibility
     
     def create_env(self):
         """Create a Unity environment based on the class path and wrap it in a gym environment for training"""
@@ -74,12 +79,9 @@ class UnityGymPipeline:
                             param_channel.set_float_parameter(k2, v2['sampler_parameters']['value'])
                     else:
                         raise Warning("Parameter not being set for domain randomization. Only uniform sampler type is supported.")
-            else:
-                raise Warning("No environment parameters found in YAML configuration. Domain randomization will not be applied.")
         # Create Unity environment and wrap it in a Gym environment
-        unity_env = UnityEnvironment(self.env_path, side_channels=[channel, param_channel])
+        unity_env = UnityEnvironment(self.env_path, side_channels=[channel, param_channel], base_port=self.base_port)
         gym_env = UnityToGymWrapper(unity_env)
-        gym_env.close()
         # Wrap the environment in a custom observation wrapper for diffusion inference and load pipeline
         self.env = DiffusionPipeline(gym_env, self.diffusion_model, self.diffusion_prompt, self.out_type, self.control_condition, self.guidance_scale, self.denoise, self.rl_res, self.log_dir)
 
@@ -90,12 +92,13 @@ class UnityGymPipeline:
         os.makedirs(monitor_dump_dir, exist_ok=True)
         # Configure training for the PPO model
         checkpoint_callback = CheckpointCallback(save_freq=5000, save_path=self.log_dir, name_prefix="unity_rl_ckpt", save_replay_buffer=True, save_vecnormalize=True, verbose=1)
-        # Set n_steps to 1 for single step training - useful for initial testing
+        # Set n_steps to 5 for smaller step training - useful for initial testing
         if not resume:
-            model = PPO('CnnPolicy', self.env, verbose=1, tensorboard_log=monitor_dump_dir)
+            model = PPO('CnnPolicy', self.env, verbose=1, tensorboard_log=monitor_dump_dir, stats_window_size=50)
         else:
             # Resume training from latest checkpoint
             ckpt_files = [f for f in os.listdir(self.log_dir) if 'unity_rl_ckpt' in f]
+            ckpt_files = [os.path.join(self.log_dir, f) for f in ckpt_files]
             if len(ckpt_files) == 0:
                 raise FileNotFoundError("No checkpoint files found in log directory to resume from.")
             latest_ckpt = max(ckpt_files, key=os.path.getctime)
@@ -123,12 +126,12 @@ class UnityGymPipeline:
 
     def _reset(self):
         """Reset the environment and return initial observation"""
-        obs= self.env.reset()
+        obs= self.env.reset() # Calls difusion pipeline wrapper for reset
         return obs
     
     def _step(self, action):
         """Step through the environment with the given action and return observation, reward, terminated, truncated, info"""
-        result = self.env.step(action)
+        result = self.env.step(action) # Calls diffusion pipeline wrapper for step
         if len(result) == 4:
             # Old Gym API
             obs, reward, done, info = result
@@ -266,7 +269,7 @@ class DiffusionPipeline(gym.ObservationWrapper):
         # Images saved as num.png for easy sorting
         obs_img.save(os.path.join(dir, f"{len(os.listdir(dir))}.png"))
 
-class GymV21Compatibility(GymV21CompatibilityV0):
+class GymV21Compatibility(shimmy.GymV21CompatibilityV0):
     def step(self, action: ActType) -> tuple[Any, float, bool, bool, dict]:
         """Modified step function from Shimmy openai_gym_compatibility.py script to handle terminated and truncated flags"""
         result = self.gym_env.step(action)
@@ -282,12 +285,13 @@ class GymV21Compatibility(GymV21CompatibilityV0):
         return convert_to_terminated_truncated_step_api((obs, reward, done, info))
     
 if __name__ == '__main__':
-    env_path = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/rl_pipeline/PushBlockBuild_512DR/pushblock_solid_dr.x86_64' # Linux path
+    env_path = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/rl_pipeline/PushBlock_Build_Reward/pushblock_solid_dr.x86_64' # Linux path
+    yaml_path = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/rl_pipeline/DiffusionPushBlock.yaml'
     # env_path = '/Users/ethan/Documents/Robotics/Thesis/DiffusionResearch/Sim2RealDiffusion/rl_pipeline/pushblock_solid.app' # Mac path
-    yaml_path = '/Users/ethan/Documents/Robotics/Thesis/MEDCVR_Unity/medcvr_localsims/dvrk_mlagents/unity_project/Assets/Tasks/PushBlock/Scripts/DiffusionPushBlock.yaml'
+    # yaml_path = '/Users/ethan/Documents/Robotics/Thesis/MEDCVR_Unity/medcvr_localsims/dvrk_mlagents/unity_project/Assets/Tasks/PushBlock/Scripts/DiffusionPushBlock.yaml' # Mac path
     diffusion_prompt = 'pushblock'
     diffusion_model = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/inference/solid_pushblock/model_v8/2000'
-    log_dir = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/rl_pipeline/test1'
+    log_dir = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/rl_pipeline/dr_test'
     out_type = 'img'
     timesteps = 1000000
     timescale = 4
@@ -296,10 +300,13 @@ if __name__ == '__main__':
     denoise = 10
     rl_resolution = 64
 
-    unity_pipeline = UnityGymPipeline(env_path, yaml_path, timesteps, timescale, diffusion_prompt, diffusion_model, out_type, control_condition, guidance_scale, denoise, rl_resolution, log_dir)
+    args = argparse.ArgumentParser()
+    args.add_argument('base_port', nargs='?', type=int, default=5004, help='Base port for Unity environment (default: 5004)')
+    args = args.parse_args()
+    base_port = args.base_port
+
+    unity_pipeline = UnityGymPipeline(env_path, yaml_path, timesteps, timescale, diffusion_prompt, diffusion_model, base_port, out_type, control_condition, guidance_scale, denoise, rl_resolution, log_dir)
     unity_pipeline.create_env()
     model = unity_pipeline.train_ppo()
-    # unity_pipeline._reset()
-    # unity_pipeline._step(unity_pipeline.env.action_space.sample().reshape(1, 2))
     unity_pipeline._close()
 
