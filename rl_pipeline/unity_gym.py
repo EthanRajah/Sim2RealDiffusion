@@ -102,7 +102,7 @@ class UnityGymPipeline:
             if len(ckpt_files) == 0:
                 raise FileNotFoundError("No checkpoint files found in log directory to resume from.")
             latest_ckpt = max(ckpt_files, key=os.path.getctime)
-            model = PPO.load(os.path.join(self.log_dir, latest_ckpt), env=self.env)
+            model = PPO.load(latest_ckpt, env=self.env)
             # Load logger object for tensorboard logging
             logger = configure(monitor_dump_dir, ['tensorboard'])
             model.set_logger(logger)
