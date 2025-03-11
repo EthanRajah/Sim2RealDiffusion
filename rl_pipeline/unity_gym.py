@@ -158,7 +158,17 @@ class UnityGymPipeline:
             obs, reward, terminated, truncated, info = self._step(action)
             if terminated:
                 break
-        self._close()
+    
+    def inference_no_diffusion(self):
+        """Use trained model to get Agent to perform task in Unity environment without diffusion processing for observations"""
+        self.env.no_diffusion = True
+        model = PPO.load(os.path.join(self.log_dir, 'unity_model'))
+        obs = self._reset()
+        while True:
+            action, _states = model.predict(obs)
+            obs, reward, terminated, truncated, info = self._step(action)
+            if terminated:
+                break
 
     def _reset(self):
         """Reset the environment and return initial observation"""
@@ -192,6 +202,7 @@ class DiffusionPipeline(gym.ObservationWrapper):
         self.denoise = denoise
         self.rl_res = rl_resolution
         self.log_dir = log_dir
+        self.no_diffusion = False # Useful if wanting to do training or inference without diffusion processing
         # Diffusion parameters to be set on initialization
         self.pipe = None
         self.generator = None
@@ -276,23 +287,27 @@ class DiffusionPipeline(gym.ObservationWrapper):
         obs = np.transpose(obs, (1, 2, 0))
         obs_img = (obs * 255).astype(np.uint8)
         obs_img = Image.fromarray(obs_img)
-        # Resample and resize image for tile control
-        resolution = obs_img.size[0]
-        tile_condition_img = self.resize_for_condition_image(obs_img, resolution)
-        # Generate PIDI edge mask for softedge control
-        edge_condition_image = self.mask_processor(obs_img, safe=True, image_resolution=resolution, detect_resolution=resolution)
-        # Run inference using pipeline
-        control_images = [tile_condition_img, edge_condition_image]
-        if self.out_type == 'latent':
-            # Return latent output for RL training. This is pre-decoded from the diffusion model.
-            output_image = self.pipe(self.prompt, control_images, num_inference_steps=10, 
-                                     generator=self.generator, controlnet_conditioning_scale=self.control_condition, 
-                                     guidance_scale=self.guidance_scale, output_type="latent").images[0]
+        if not self.no_diffusion:
+            # Resample and resize image for tile control
+            resolution = obs_img.size[0]
+            tile_condition_img = self.resize_for_condition_image(obs_img, resolution)
+            # Generate PIDI edge mask for softedge control
+            edge_condition_image = self.mask_processor(obs_img, safe=True, image_resolution=resolution, detect_resolution=resolution)
+            # Run inference using pipeline
+            control_images = [tile_condition_img, edge_condition_image]
+            if self.out_type == 'latent':
+                # Return latent output for RL training. This is pre-decoded from the diffusion model.
+                output_image = self.pipe(self.prompt, control_images, num_inference_steps=10, 
+                                        generator=self.generator, controlnet_conditioning_scale=self.control_condition, 
+                                        guidance_scale=self.guidance_scale, output_type="latent").images[0]
+            else:
+                # Return decoded image output for RL training
+                output_image = self.pipe(self.prompt, control_images, num_inference_steps=10, 
+                                        generator=self.generator, controlnet_conditioning_scale=self.control_condition, 
+                                        guidance_scale=self.guidance_scale).images[0]
         else:
-            # Return decoded image output for RL training
-            output_image = self.pipe(self.prompt, control_images, num_inference_steps=10, 
-                                    generator=self.generator, controlnet_conditioning_scale=self.control_condition, 
-                                    guidance_scale=self.guidance_scale).images[0]
+            # No diffusion processing was set to True, return original observation in RGB format
+            output_image = obs_img
         # Post process output based on out_type and return augmented observation
         aug_obs = self.post_process_image_output(output_image)
         # Save observation image for validation
@@ -344,5 +359,8 @@ if __name__ == '__main__':
     unity_pipeline = UnityGymPipeline(env_path, yaml_path, timesteps, timescale, diffusion_prompt, diffusion_model, base_port, out_type, control_condition, guidance_scale, denoise, rl_resolution, log_dir)
     unity_pipeline.create_env()
     model = unity_pipeline.train_ppo()
+    # for i in range(5):
+    #     print(f"Running inference {i+1}...")
+    #     unity_pipeline.inference_no_diffusion()
     unity_pipeline._close()
 
