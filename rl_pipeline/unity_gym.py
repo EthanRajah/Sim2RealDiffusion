@@ -109,9 +109,8 @@ class UnityGymPipeline:
             model.set_logger(logger)
         # Configure training for the PPO model
         checkpoint_callback = CheckpointCallback(save_freq=5000, save_path=self.log_dir, name_prefix="unity_rl_ckpt", save_replay_buffer=True, save_vecnormalize=True, verbose=1)
-        checkpoint_callback.n_calls = model.num_timesteps // checkpoint_callback.save_freq
         # Train model
-        model.learn(total_timesteps=self.timesteps, progress_bar=True, callback=checkpoint_callback)
+        model.learn(total_timesteps=self.timesteps, progress_bar=True, callback=checkpoint_callback, reset_num_timesteps=False)
         # Save model
         model_save = os.path.join(self.log_dir, 'unity_model')
         model.save(model_save)
