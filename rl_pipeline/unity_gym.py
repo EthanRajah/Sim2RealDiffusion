@@ -92,7 +92,7 @@ class UnityGymPipeline:
         os.makedirs(monitor_dump_dir, exist_ok=True)
         # Set n_steps to 5 for smaller step training - useful for initial testing
         if not resume:
-            model = PPO('CnnPolicy', self.env, verbose=1, tensorboard_log=monitor_dump_dir, stats_window_size=50)
+            model = PPO('CnnPolicy', self.env, verbose=1, tensorboard_log=monitor_dump_dir, stats_window_size=50, batch_size=256, n_steps=10240, n_epochs=3)
         else:
             # Resume training from latest checkpoint
             ckpt_files = [f for f in os.listdir(self.log_dir) if 'unity_rl_ckpt' in f]
@@ -140,9 +140,8 @@ class UnityGymPipeline:
             model.set_logger(logger)
         # Configure training for the SAC model
         checkpoint_callback = CheckpointCallback(save_freq=5000, save_path=self.log_dir, name_prefix="unity_rl_ckpt", save_replay_buffer=True, save_vecnormalize=True, verbose=1)
-        checkpoint_callback.n_calls = model.num_timesteps // checkpoint_callback.save_freq
         # Train model
-        model.learn(total_timesteps=self.timesteps, progress_bar=True, callback=checkpoint_callback)
+        model.learn(total_timesteps=self.timesteps, progress_bar=True, callback=checkpoint_callback, reset_num_timesteps=False)
         # Save model
         model_save = os.path.join(self.log_dir, 'unity_model')
         model.save(model_save)
