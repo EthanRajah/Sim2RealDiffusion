@@ -1,0 +1,141 @@
+behaviors:
+  PushBlock:
+    trainer_type: ppo
+    keep_checkpoints: 5
+    max_steps: 3000000
+    time_horizon: 128
+    summary_freq: 60000
+    
+    hyperparameters:
+      # Common Hyperparameters
+      batch_size: 256 
+      buffer_size: 10240
+      learning_rate: 0.0003
+      learning_rate_schedule: linear
+      
+      # PPO-specific hyperparameters
+      beta: 0.005
+      beta_schedule: constant
+      epsilon: 0.2
+      epsilon_schedule: linear
+      lambd: 0.95
+      num_epoch: 3
+    
+    # Configuration of the neural network (common to PPO/SAC)
+    network_settings:
+      vis_encode_type: resnet
+      normalize: true
+      hidden_units: 128
+      num_layers: 2
+
+    reward_signals:
+      extrinsic:
+        gamma: 0.99
+        strength: 1.0
+
+environment_parameters:
+  # Lighting Randomization
+  light_intensity:
+    sampler_type: uniform
+    sampler_parameters:
+        min_value: 5
+        max_value: 50
+  light_px:
+    sampler_type: uniform
+    sampler_parameters:
+        min_value: -4
+        max_value: 4
+  light_py:
+    sampler_type: uniform
+    sampler_parameters:
+        min_value: 4
+        max_value: 7
+  light_pz:
+    sampler_type: uniform
+    sampler_parameters:
+        min_value: -2
+        max_value: 1.5
+  # shadow_probability:
+  #   sampler_type: uniform
+  #   sampler_parameters:
+  #       min_value: 0
+  #       max_value: 1
+
+  # Cube Randomization
+  # Using smaller mass here, to make the cube spin easier
+  mass:
+    sampler_type: uniform
+    sampler_parameters:
+        min_value: 0.01
+        max_value: 0.3
+  scale:
+    sampler_type: uniform
+    sampler_parameters:
+        min_value: 0.3
+        max_value: 0.5
+
+  # Floor Randomization
+  dynamic_friction:
+    sampler_type: uniform
+    sampler_parameters:
+        min_value: 0.0
+        max_value: 0.3
+  static_friction:
+    sampler_type: uniform
+    sampler_parameters:
+        min_value: 0.0
+        max_value: 0.3
+
+  # Camera Randomization
+  camera_px:
+    sampler_type: uniform
+    sampler_parameters:
+        min_value: -1.0
+        max_value: 1.0
+  camera_py:
+    sampler_type: uniform
+    sampler_parameters:
+        min_value: 2.9
+        max_value: 3.1
+  camera_pz:
+    sampler_type: uniform
+    sampler_parameters:
+        min_value: 0.0
+        max_value: 1.0
+  camera_rx:
+    sampler_type: uniform
+    sampler_parameters:
+        min_value: 80.0
+        max_value: 100.0
+  camera_ry:
+    sampler_type: uniform
+    sampler_parameters:
+        min_value: -3.0
+        max_value: 3.0
+  camera_rz:
+    sampler_type: uniform
+    sampler_parameters:
+        min_value: 80.0
+        max_value: 100.0
+
+  # Color Randomization
+  # ground_r:
+  #   sampler_type: uniform
+  #   sampler_parameters:
+  #       min_value: 0.0
+  #       max_value: 0.4
+  # ground_g:
+  #   sampler_type: uniform
+  #   sampler_parameters:
+  #       min_value: 0.6
+  #       max_value: 0.8
+  # block_r:
+  #   sampler_type: uniform
+  #   sampler_parameters:
+  #       min_value: 0.5
+  #       max_value: 1.0
+  # target_rb:
+  #   sampler_type: uniform
+  #   sampler_parameters:
+  #       min_value: 0.25
+  #       max_value: 0.75
