@@ -61,6 +61,12 @@ The fine-tuned diffusion models are used to generate realistic simulation images
 ### Environment Setup
 Gymnasium/Gym is used to create a custom RL training pipeline that integrates with the Unity simulation environment. Gymnasium is a popular library for developing and testing RL algorithms, providing a standardized interface for creating and managing environments. Stable Baselines3 is used as the RL library for training agents, providing a collection of state-of-the-art RL algorithms and utilities for training and evaluating RL agents. While the pipeline supports various RL algorithms, the focus is on using Proximal Policy Optimization (PPO) and Soft Actor-Critic (SAC) for training agents. The ML-Agents library provides a Gym-compatible wrapper for Unity environments, enabling the use of Gymnasium's API to interact with the Unity simulation through Python.
 
+The key dependencies for performing diffusion-based RL training are provided in the `requirements.txt` file. Please create a virtual environment and run the following command to install the dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
 <!-- RL algorithm and training loop details -->
 ### Training Pipeline
 The core classes required for diffusion-based RL training are implemented in the `rl_pipeline/unity_gym.py` file. Users can configure their run (hyperparameters, diffusion model, Unity task, etc) by modifying the main block of the file, but future versions will include a separate configuration file and WandB integration for easier setup and monitoring.
