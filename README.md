@@ -4,7 +4,7 @@ This repository contains code and documentation for vision-based RL training of 
 The project is divided into several key components:
 - **Diffusion Image Generation and Evaluation**: Training and evaluating fine-tuned diffusion models to generate high-quality images of surgical tasks.
 - **Diffusion-Based RL Training**: Training reinforcement learning agents using the generated images as input.
-- **Sim-to-Real Transfer**: Techniques for transferring learned policies from simulation to real-world environments.
+- **Sim-to-Real Transfer**: Limitations and techniques for transferring learned diffusion-based policies from simulation to real-world environments.
 
 ## Diffusion Image Generation
 
