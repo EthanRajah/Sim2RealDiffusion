@@ -1,0 +1,52 @@
+BootStrap: docker
+From: nvidia/cuda:12.4.0-devel-ubuntu22.04
+
+%setup
+    # Create temporary directories for caching during the container build process
+    if [ ! -d tmp ]; then
+        mkdir tmp
+    fi
+
+%files
+    # Example: Copy the requirements.txt file from the host to the container
+    /home/ethan/DiffusionResearch/Sim2RealDiffusion/requirements.txt /requirements.txt
+
+%post
+    # Set the environment to non-interactive to avoid prompts
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Update the system and install necessary dependencies
+    apt-get update && apt-get install -y \
+        nvidia-container-toolkit \
+        nvidia-cuda-toolkit \
+        build-essential \
+        wget \
+        curl \
+        libgl1-mesa-glx \
+        libx11-6 \
+        python3.10 \
+        python3.10-venv \
+        python3-pip \
+        && rm -rf /var/lib/apt/lists/*
+
+    # Upgrade pip
+    pip3 install --upgrade pip
+
+    # Install PyTorch with CUDA 12.4
+    pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+    # Create a symbolic link for Python 3.10 (for consistency)
+    ln -s /usr/bin/python3.10 /usr/bin/python
+
+    # Install dependencies from requirements.txt
+    pip3 install -r /requirements.txt
+
+%environment
+    # Set environment variables for CUDA 12.4
+    export PATH=/usr/local/cuda-12.4/bin:$PATH
+    export LD_LIBRARY_PATH=/usr/local/cuda-12.4/lib64:$LD_LIBRARY_PATH
+    export PATH=$PATH:/usr/bin/nvidia-container-cli
+    
+%labels
+    Author: Ethan
+    Description: Container with CUDA 12.4, Python 3.10, and PyTorch for Ubuntu 22.04
