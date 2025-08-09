@@ -9,7 +9,8 @@ from gymnasium.utils.step_api_compatibility import convert_to_terminated_truncat
 from gymnasium.core import ActType
 from typing import Any
 from stable_baselines3 import PPO, SAC
-from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import CheckpointCallback, CallbackList
+from wandb.integration.sb3 import WandbCallback
 from stable_baselines3.common.logger import configure
 import numpy as np
 import argparse
@@ -18,7 +19,8 @@ import torch
 from PIL import Image
 from diffusers import StableDiffusionControlNetPipeline, ControlNetModel, UniPCMultistepScheduler
 from controlnet_aux import PidiNetDetector
-
+import logging
+import wandb
 class UnityGymPipeline:
     def __init__(self, env_path, yaml_path, timesteps, timescale, diffusion_prompt, diffusion_model, base_port, out_type='img', control_condition=[0.5, 0.5], guidance_scale=4.5, denoise=10, rl_resolution=64, log_dir='logs'):
         self.env_path = env_path
@@ -70,7 +72,7 @@ class UnityGymPipeline:
                     # Ensure that sampler_type and sampler_parameters are present in the YAML configuration
                     if 'sampler_type' not in v2 or 'sampler_parameters' not in v2:
                         raise ValueError("Invalid YAML configuration. Must have 'sampler_type' and 'sampler_parameters' keys.")
-                    print(f"Setting parameter {k2} to {v2}...")
+                    logging.info(f"Setting parameter {k2} to {v2}...")
                     if v2['sampler_type'] == 'uniform':
                         # Check if min and max values are present. If so use set_uniform_sampler_parameters from mlagents
                         if 'min_value' in v2['sampler_parameters'] and 'max_value' in v2['sampler_parameters']:
@@ -87,7 +89,6 @@ class UnityGymPipeline:
 
     def train_ppo(self, resume=False):
         """Train a PPO policy using the Unity-Gym environment"""
-        # Create a monitoring wrapper for the environment
         monitor_dump_dir = os.path.join(self.log_dir, f'ppo_{self.diffusion_prompt}_tensorboard')
         os.makedirs(monitor_dump_dir, exist_ok=True)
         # Set n_steps to 5 for smaller step training - useful for initial testing
@@ -109,8 +110,10 @@ class UnityGymPipeline:
             model.set_logger(logger)
         # Configure training for the PPO model
         checkpoint_callback = CheckpointCallback(save_freq=5000, save_path=self.log_dir, name_prefix="unity_rl_ckpt", save_replay_buffer=True, save_vecnormalize=True, verbose=1)
+        wandb_callback = WandbCallback(model_save_path=self.log_dir, model_save_freq=50000, gradient_save_freq=0, verbose=2, sync_tensorboard=True)
+        callback_list = CallbackList([checkpoint_callback, wandb_callback])
         # Train model
-        model.learn(total_timesteps=self.timesteps, progress_bar=True, callback=checkpoint_callback, reset_num_timesteps=False)
+        model.learn(total_timesteps=self.timesteps, progress_bar=True, callback=callback_list, reset_num_timesteps=False)
         # Save model
         model_save = os.path.join(self.log_dir, 'unity_model')
         model.save(model_save)
@@ -118,7 +121,6 @@ class UnityGymPipeline:
     
     def train_sac(self, resume=False):
         """Train a SAC policy using the Unity-Gym environment"""
-        # Create a monitoring wrapper for the environment
         monitor_dump_dir = os.path.join(self.log_dir, f'sac_{self.diffusion_prompt}_tensorboard')
         os.makedirs(monitor_dump_dir, exist_ok=True)
         # Set n_steps to 5 for smaller step training - useful for initial testing
@@ -140,8 +142,10 @@ class UnityGymPipeline:
             model.set_logger(logger)
         # Configure training for the SAC model
         checkpoint_callback = CheckpointCallback(save_freq=5000, save_path=self.log_dir, name_prefix="unity_rl_ckpt", save_replay_buffer=True, save_vecnormalize=True, verbose=1)
+        wandb_callback = WandbCallback(model_save_path=self.log_dir, model_save_freq=50000, gradient_save_freq=0, verbose=2, sync_tensorboard=True)
+        callback_list = CallbackList([checkpoint_callback, wandb_callback])
         # Train model
-        model.learn(total_timesteps=self.timesteps, progress_bar=True, callback=checkpoint_callback, reset_num_timesteps=False)
+        model.learn(total_timesteps=self.timesteps, progress_bar=True, callback=callback_list, reset_num_timesteps=False)
         # Save model
         model_save = os.path.join(self.log_dir, 'unity_model')
         model.save(model_save)
@@ -333,32 +337,83 @@ class GymV21Compatibility(shimmy.GymV21CompatibilityV0):
             self.render()
         return convert_to_terminated_truncated_step_api((obs, reward, done, info))
     
-if __name__ == '__main__':
-    env_path = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/rl_pipeline/PushBlock_Build_Reward/pushblock_solid_dr.x86_64' # Linux path
-    yaml_path = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/rl_pipeline/DiffusionPushBlock.yaml'
-    # env_path = '/Users/ethan/Documents/Robotics/Thesis/DiffusionResearch/Sim2RealDiffusion/rl_pipeline/pushblock_solid.app' # Mac path
-    # yaml_path = '/Users/ethan/Documents/Robotics/Thesis/MEDCVR_Unity/medcvr_localsims/dvrk_mlagents/unity_project/Assets/Tasks/PushBlock/Scripts/DiffusionPushBlock.yaml' # Mac path
-    diffusion_prompt = 'pushblock'
-    diffusion_model = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/inference/solid_pushblock/model_v8/2000'
-    log_dir = '/home/ethan/DiffusionResearch/Sim2RealDiffusion/rl_pipeline/dr_test'
-    out_type = 'img'
-    timesteps = 1000000
-    timescale = 4
-    control_condition = [1.2, 1.5]
-    guidance_scale = 4.5
-    denoise = 10
-    rl_resolution = 64
+def main():
+    """Main function to run the UnityGymPipeline"""
+    parser = argparse.ArgumentParser(description='Run Unity Gym Pipeline for RL training with diffusion model')
+    parser.add_argument('--env_path', type=str, help='Path to Unity environment binary')
+    parser.add_argument('--dr_yaml_path', type=str, help='Path to YAML configuration file for domain randomization')
+    parser.add_argument('--diffusion_model', type=str, help='Path to fine-tuned diffusion model')
+    parser.add_argument('--diffusion_prompt', type=str, help='Prompt used for diffusion model training')
+    parser.add_argument('--log_dir', type=str, default='logs', help='Directory to save logs and models (default: logs)')
+    parser.add_argument('--out_type', type=str, default='img', help="Output type from diffusion model, either 'img' or 'latent' (default: img)")
+    parser.add_argument('--timesteps', type=int, default=1000000, help='Number of RL training timesteps (default: 1000000)')
+    parser.add_argument('--timescale', type=int, default=4, help='Time scale for Unity environment (default: 4)')
+    parser.add_argument('--control_condition', nargs=2, type=float, default=[1.2, 1.5], help='ControlNet conditioning scales for tile and softedge control nets (default: [1.2, 1.5])')
+    parser.add_argument('--guidance_scale', type=float, default=4.5, help='Guidance scale for diffusion model (default: 4.5)')
+    parser.add_argument('--denoise', type=int, default=10, help='Number of denoising steps for diffusion model (default: 10)')
+    parser.add_argument('--rl_resolution', type=int, default=64, help='Resolution for RL training observations (default: 64)')
+    parser.add_argument('--base_port', nargs='?', type=int, default=5004, help='Base port for Unity environment (default: 5004)')
+    parser.add_argument('--wandb_project', type=str, default='unity_rl_pipeline', help='Weights & Biases project name for logging (default: unity_rl_pipeline)')
+    
+    args = parser.parse_args()
 
-    args = argparse.ArgumentParser()
-    args.add_argument('base_port', nargs='?', type=int, default=5004, help='Base port for Unity environment (default: 5004)')
-    args = args.parse_args()
-    base_port = args.base_port
+    # Initialize Weights & Biases for logging. Store configuration parameters.
+    wandb.init(project=args.wandb_project, config={
+        'env_path': args.env_path,
+        'dr_yaml_path': args.dr_yaml_path,
+        'diffusion_model': args.diffusion_model,
+        'diffusion_prompt': args.diffusion_prompt,
+        'out_type': args.out_type,
+        'control_condition': args.control_condition,
+        'guidance_scale': args.guidance_scale,
+        'denoise': args.denoise,
+        'rl_resolution': args.rl_resolution,
+        'timesteps': args.timesteps,
+        'timescale': args.timescale,
+        'log_dir': args.log_dir
+    })
 
-    unity_pipeline = UnityGymPipeline(env_path, yaml_path, timesteps, timescale, diffusion_prompt, diffusion_model, base_port, out_type, control_condition, guidance_scale, denoise, rl_resolution, log_dir)
+    logging.info("=================== Unity Gym Pipeline ==================")
+    logging.info(f"Environment Path: {args.env_path}")
+    logging.info(f"Domain Randomization YAML: {args.dr_yaml_path}")
+    logging.info(f"Diffusion Model Path: {args.diffusion_model}")
+    logging.info(f"Diffusion Prompt: {args.diffusion_prompt}")
+    logging.info(f"Output Type: {args.out_type}")
+    logging.info(f"ControlNet Conditioning Scales: {args.control_condition}")
+    logging.info(f"Guidance Scale: {args.guidance_scale}")
+    logging.info(f"Denoising Steps: {args.denoise}")
+    logging.info(f"RL Resolution: {args.rl_resolution}")
+    logging.info(f"Training Timesteps: {args.timesteps}")
+    logging.info(f"Time Scale: {args.timescale}")
+    logging.info(f"Log Directory: {args.log_dir}")
+    logging.info("========================================================")
+    
+    unity_pipeline = UnityGymPipeline(args.env_path,
+                                      args.dr_yaml_path,
+                                      args.timesteps,
+                                      args.timescale,
+                                      args.diffusion_prompt,
+                                      args.diffusion_model,
+                                      args.base_port,
+                                      args.out_type,
+                                      args.control_condition,
+                                      args.guidance_scale,
+                                      args.denoise,
+                                      args.rl_resolution,
+                                      args.log_dir)
+    
+    logging.info("Creating Unity environment...")
     unity_pipeline.create_env()
+    logging.info("Starting PPO training...")
     model = unity_pipeline.train_ppo()
+    logging.info("Training complete. Closing environment...")
+    # Uncomment to run inference without diffusion processing
     # for i in range(5):
-    #     print(f"Running inference {i+1}...")
+    #     logging.info(f"Running inference {i+1}...")
     #     unity_pipeline.inference_no_diffusion()
     unity_pipeline._close()
+    
+if __name__ == '__main__':
+    logging.basicConfig(level=logging.INFO)
+    main()
 
