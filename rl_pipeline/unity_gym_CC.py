@@ -1,4 +1,7 @@
-# Monkey-patch mlagents to prevent network calls for Compute Canada cluster usage
+# Modified unity_gym codebase for Compute Canada support - specifically for no network access
+# Need to have ControlNet models installed locally and monkey patch the UnityEnvRegistry to not require internet access
+
+# Monkey-patch mlagents to prevent network calls
 import sys
 # Patch the _load_all_manifests method to do nothing instead of loading remote manifests
 from mlagents_envs.registry.unity_env_registry import UnityEnvRegistry
@@ -262,17 +265,19 @@ class DiffusionPipeline(gym.ObservationWrapper):
         """
         # Initialize diffusion pipeline and parameters
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        # Load tile and softedge control net models
-        tile_control = ControlNetModel.from_pretrained('lllyasviel/control_v11f1e_sd15_tile', torch_dtype=torch.float16)
-        softedge_control = ControlNetModel.from_pretrained('lllyasviel/control_v11p_sd15_softedge', torch_dtype=torch.float16)
-        self.mask_processor = PidiNetDetector.from_pretrained('lllyasviel/Annotators')
+        # Load tile and softedge control net models from local paths
+        tile_control = ControlNetModel.from_pretrained('/src/Tile_ControlNet', torch_dtype=torch.float16)
+        softedge_control = ControlNetModel.from_pretrained('/src/SoftEdge_ControlNet', torch_dtype=torch.float16)
+        self.mask_processor = PidiNetDetector.from_pretrained('/src/Annotators')
         controlnet = [tile_control, softedge_control]
         # Apply control net to sim2real model to generate pipeline
         self.generator = torch.Generator(device='cpu').manual_seed(0)
         # Load either Instaflow or Stable Diffusion ControlNet pipeline based on user input
         if self.instaflow:
+            logging.info("Loading Instaflow Rectified Flow ControlNet Pipeline for inference...")
             self.pipe = RectifiedFlowCtrlPipeline.from_pretrained(self.model, controlnet=controlnet, torch_dtype=torch.float16).to(device)
         else:
+            logging.info("Loading Stable Diffusion ControlNet Pipeline for inference...")
             self.pipe = StableDiffusionControlNetPipeline.from_pretrained(self.model, controlnet=controlnet, torch_dtype=torch.float16).to(device)
         # Reduce inference times by using a multistep scheduler
         self.pipe.scheduler = UniPCMultistepScheduler.from_config(self.pipe.scheduler.config)
@@ -450,4 +455,3 @@ def main():
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     main()
-
