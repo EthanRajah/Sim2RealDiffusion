@@ -86,7 +86,8 @@ class UnityGymPipeline:
                     # Ensure that sampler_type and sampler_parameters are present in the YAML configuration
                     if 'sampler_type' not in v2 or 'sampler_parameters' not in v2:
                         raise ValueError("Invalid YAML configuration. Must have 'sampler_type' and 'sampler_parameters' keys.")
-                    logging.info(f"Setting parameter {k2} to {v2}...")
+                    logger = logging.getLogger(__name__)
+                    logger.info(f"Setting parameter {k2} to {v2}...")
                     if v2['sampler_type'] == 'uniform':
                         # Check if min and max values are present. If so use set_uniform_sampler_parameters from mlagents
                         if 'min_value' in v2['sampler_parameters'] and 'max_value' in v2['sampler_parameters']:
@@ -123,7 +124,7 @@ class UnityGymPipeline:
             logger = configure(monitor_dump_dir, ['tensorboard'])
             model.set_logger(logger)
         # Configure training for the PPO model
-        checkpoint_callback = CheckpointCallback(save_freq=5000, save_path=self.log_dir, name_prefix="unity_rl_ckpt", save_replay_buffer=True, save_vecnormalize=True, verbose=1)
+        checkpoint_callback = CheckpointCallback(save_freq=50000, save_path=self.log_dir, name_prefix="unity_rl_ckpt", save_replay_buffer=True, save_vecnormalize=True, verbose=1)
         wandb_callback = WandbCallback(model_save_path=self.log_dir, model_save_freq=50000, gradient_save_freq=5000, verbose=2)
         callback_list = CallbackList([checkpoint_callback, wandb_callback])
         # Train model
@@ -405,21 +406,22 @@ def main():
         monitor_gym=True
     )
 
-    logging.info("=================== Unity Gym Pipeline ==================")
-    logging.info(f"Environment Path: {args.env_path}")
-    logging.info(f"Domain Randomization YAML: {args.dr_yaml_path}")
-    logging.info(f"Diffusion Model Path: {args.diffusion_model}")
-    logging.info(f"Diffusion Prompt: {args.diffusion_prompt}")
-    logging.info(f"Output Type: {args.out_type}")
-    logging.info(f"ControlNet Conditioning Scales: {args.control_condition}")
-    logging.info(f"Guidance Scale: {args.guidance_scale}")
-    logging.info(f"Denoising Steps: {args.denoise}")
-    logging.info(f"RL Resolution: {args.rl_resolution}")
-    logging.info(f"Training Timesteps: {args.timesteps}")
-    logging.info(f"Time Scale: {args.timescale}")
-    logging.info(f"Log Directory: {args.log_dir}")
-    logging.info(f"Using an Instaflow Diffusion Pipeline: {args.instaflow}")
-    logging.info("========================================================")
+    logger = logging.getLogger(__name__)
+    logger.info("=================== Unity Gym Pipeline ==================")
+    logger.info(f"Environment Path: {args.env_path}")
+    logger.info(f"Domain Randomization YAML: {args.dr_yaml_path}")
+    logger.info(f"Diffusion Model Path: {args.diffusion_model}")
+    logger.info(f"Diffusion Prompt: {args.diffusion_prompt}")
+    logger.info(f"Output Type: {args.out_type}")
+    logger.info(f"ControlNet Conditioning Scales: {args.control_condition}")
+    logger.info(f"Guidance Scale: {args.guidance_scale}")
+    logger.info(f"Denoising Steps: {args.denoise}")
+    logger.info(f"RL Resolution: {args.rl_resolution}")
+    logger.info(f"Training Timesteps: {args.timesteps}")
+    logger.info(f"Time Scale: {args.timescale}")
+    logger.info(f"Log Directory: {args.log_dir}")
+    logger.info(f"Using an Instaflow Diffusion Pipeline: {args.instaflow}")
+    logger.info("========================================================")
     
     unity_pipeline = UnityGymPipeline(args.env_path,
                                       args.dr_yaml_path,
@@ -436,14 +438,14 @@ def main():
                                       args.log_dir,
                                       args.instaflow)
     
-    logging.info("Creating Unity environment...")
+    logger.info("Creating Unity environment...")
     unity_pipeline.create_env()
-    logging.info("Starting PPO training...")
+    logger.info("Starting PPO training...")
     model = unity_pipeline.train_ppo()
-    logging.info("Training complete. Closing environment...")
+    logger.info("Training complete. Closing environment...")
     # Uncomment to run inference without diffusion processing
     # for i in range(5):
-    #     logging.info(f"Running inference {i+1}...")
+    #     logger.info(f"Running inference {i+1}...")
     #     unity_pipeline.inference_no_diffusion()
     unity_pipeline._close()
     

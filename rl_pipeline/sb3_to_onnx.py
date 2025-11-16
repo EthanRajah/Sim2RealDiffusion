@@ -1,3 +1,4 @@
+import argparse
 import torch
 from torch import nn
 from torch.nn import Parameter
@@ -51,54 +52,68 @@ class WrapperNet(nn.Module):
         continuous_actions, value_estimate, log_prob = self.policy_module(obs)
         return continuous_actions, self.continuous_shape, self.version_number, self.memory_size
 
-# Load trained PPO model
-model = PPO.load("unity_rl_ckpt_530000_steps", device="cpu")
-# If Unity is providing normalized images already, disable PPO image normalization:
-model.policy.normalize_images = False
+def sb3_to_onnx(model_path: str, output_path: str):
+    output_name = model_path.split("/")[-1].split(".")[0] + ".onnx"
+    output_path = os.path.join(output_path, output_name)
 
-# Set the model's policy to evaluation mode
-model.policy.eval()
+    # Load trained PPO model
+    model = PPO.load(model_path, device="cpu")
+    # If Unity is providing normalized images already, disable PPO image normalization:
+    model.policy.normalize_images = False
 
-# Wrap the SB3 policy for export
-onnx_policy = OnnxableSB3Policy(model.policy)
-onnx_policy.eval()
+    # Set the model's policy to evaluation mode
+    model.policy.eval()
 
-# Wrap further to add Unity ML-Agents constants.
-# Adjust continuous_output_size if your action space differs.
-wrapper_net = WrapperNet(onnx_policy, continuous_output_size=2)
-wrapper_net.eval()
+    # Wrap the SB3 policy for export
+    onnx_policy = OnnxableSB3Policy(model.policy)
+    onnx_policy.eval()
 
-# Prepare dummy input
-# For example, if you have an observation saved in "obs.npy" that matches your environment,
-# load it, add the batch dimension, and convert to float.
-dummy_input = torch.from_numpy(np.load("obs.npy")).unsqueeze(0).float() / 255.0
+    # Wrap further to add Unity ML-Agents constants.
+    # Adjust continuous_output_size if your action space differs.
+    wrapper_net = WrapperNet(onnx_policy, continuous_output_size=2)
+    wrapper_net.eval()
 
-# Export the wrapped network to ONNX
-with torch.no_grad():
-    torch.onnx.export(
-        wrapper_net,
-        dummy_input,
-        "ppo_model_530.onnx",
-        opset_version=14,  # Adjust as needed for Barracuda (often opset 11 or higher)
-        input_names=["obs_0"],
-        output_names=["continuous_actions", "continuous_action_output_shape", "version_number", "memory_size"],
-        dynamic_axes={
-            'obs_0': {0: 'batch'},
-            'continuous_actions': {0: 'batch'},
-        }
-    )
+    # Prepare dummy input
+    # For example, if you have an observation saved in "obs.npy" that matches your environment,
+    # load it, add the batch dimension, and convert to float.
+    dummy_input = torch.from_numpy(np.load("obs.npy")).unsqueeze(0).float() / 255.0
 
-# Test the exported model using ONNX Runtime.
-onnx_model = onnx.load("ppo_model_530.onnx")
-onnx.checker.check_model(onnx_model)
+    # Export the wrapped network to ONNX
+    with torch.no_grad():
+        torch.onnx.export(
+            wrapper_net,
+            dummy_input,
+            output_path,
+            opset_version=14,  # Adjust as needed for Barracuda (often opset 11 or higher)
+            input_names=["obs_0"],
+            output_names=["continuous_actions", "continuous_action_output_shape", "version_number", "memory_size"],
+            dynamic_axes={
+                'obs_0': {0: 'batch'},
+                'continuous_actions': {0: 'batch'},
+            }
+        )
 
-# Create a random test observation matching the environment's shape.
-observation = np.random.randn(1, *model.observation_space.shape).astype(np.float32)
-ort_sess = ort.InferenceSession("ppo_model_530.onnx")
-outputs = ort_sess.run(None, {"obs_0": observation})
-print("ONNX Runtime outputs:", outputs)
+    # Test the exported model using ONNX Runtime.
+    onnx_model = onnx.load(output_path)
+    onnx.checker.check_model(onnx_model)
 
-# For comparison, get predictions directly from the PyTorch model.
-with torch.no_grad():
-    pytorch_out = model.policy(torch.as_tensor(observation), deterministic=False)
-    print("PyTorch model outputs:", pytorch_out)
+    # Create a random test observation matching the environment's shape.
+    observation = np.random.randn(1, *model.observation_space.shape).astype(np.float32)
+    ort_sess = ort.InferenceSession(output_path)
+    outputs = ort_sess.run(None, {"obs_0": observation})
+    print("ONNX Runtime outputs:", outputs)
+
+    # For comparison, get predictions directly from the PyTorch model.
+    with torch.no_grad():
+        pytorch_out = model.policy(torch.as_tensor(observation), deterministic=False)
+        print("PyTorch model outputs:", pytorch_out)
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Convert SB3 PPO model to ONNX for Unity ML-Agents")
+    parser.add_argument("-model_path", type=str, help="Path to the trained SB3 PPO model", required=True)
+    parser.add_argument("-output_path", type=str, default=".", help="Path to save the ONNX model")
+    args = parser.parse_args()
+    if not os.path.exists(args.model_path):
+        raise FileNotFoundError(f"Model path {args.model_path} does not exist.")
+    sb3_to_onnx(args.model_path, args.output_path)
+

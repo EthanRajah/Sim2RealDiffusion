@@ -89,7 +89,8 @@ class UnityGymPipeline:
                     # Ensure that sampler_type and sampler_parameters are present in the YAML configuration
                     if 'sampler_type' not in v2 or 'sampler_parameters' not in v2:
                         raise ValueError("Invalid YAML configuration. Must have 'sampler_type' and 'sampler_parameters' keys.")
-                    logging.info(f"Setting parameter {k2} to {v2}...")
+                    logger = logging.getLogger(__name__)
+                    logger.info(f"Setting parameter {k2} to {v2}...")
                     if v2['sampler_type'] == 'uniform':
                         # Check if min and max values are present. If so use set_uniform_sampler_parameters from mlagents
                         if 'min_value' in v2['sampler_parameters'] and 'max_value' in v2['sampler_parameters']:
@@ -273,11 +274,12 @@ class DiffusionPipeline(gym.ObservationWrapper):
         # Apply control net to sim2real model to generate pipeline
         self.generator = torch.Generator(device='cpu').manual_seed(0)
         # Load either Instaflow or Stable Diffusion ControlNet pipeline based on user input
+        logger = logging.getLogger(__name__)
         if self.instaflow:
-            logging.info("Loading Instaflow Rectified Flow ControlNet Pipeline for inference...")
+            logger.info("Loading Instaflow Rectified Flow ControlNet Pipeline for inference...")
             self.pipe = RectifiedFlowCtrlPipeline.from_pretrained(self.model, controlnet=controlnet, torch_dtype=torch.float16).to(device)
         else:
-            logging.info("Loading Stable Diffusion ControlNet Pipeline for inference...")
+            logger.info("Loading Stable Diffusion ControlNet Pipeline for inference...")
             self.pipe = StableDiffusionControlNetPipeline.from_pretrained(self.model, controlnet=controlnet, torch_dtype=torch.float16).to(device)
         # Reduce inference times by using a multistep scheduler
         self.pipe.scheduler = UniPCMultistepScheduler.from_config(self.pipe.scheduler.config)
@@ -410,21 +412,22 @@ def main():
         monitor_gym=True
     )
 
-    logging.info("=================== Unity Gym Pipeline ==================")
-    logging.info(f"Environment Path: {args.env_path}")
-    logging.info(f"Domain Randomization YAML: {args.dr_yaml_path}")
-    logging.info(f"Diffusion Model Path: {args.diffusion_model}")
-    logging.info(f"Diffusion Prompt: {args.diffusion_prompt}")
-    logging.info(f"Output Type: {args.out_type}")
-    logging.info(f"ControlNet Conditioning Scales: {args.control_condition}")
-    logging.info(f"Guidance Scale: {args.guidance_scale}")
-    logging.info(f"Denoising Steps: {args.denoise}")
-    logging.info(f"RL Resolution: {args.rl_resolution}")
-    logging.info(f"Training Timesteps: {args.timesteps}")
-    logging.info(f"Time Scale: {args.timescale}")
-    logging.info(f"Log Directory: {args.log_dir}")
-    logging.info(f"Using an Instaflow Diffusion Pipeline: {args.instaflow}")
-    logging.info("========================================================")
+    logger = logging.getLogger(__name__)
+    logger.info("=================== Unity Gym Pipeline ==================")
+    logger.info(f"Environment Path: {args.env_path}")
+    logger.info(f"Domain Randomization YAML: {args.dr_yaml_path}")
+    logger.info(f"Diffusion Model Path: {args.diffusion_model}")
+    logger.info(f"Diffusion Prompt: {args.diffusion_prompt}")
+    logger.info(f"Output Type: {args.out_type}")
+    logger.info(f"ControlNet Conditioning Scales: {args.control_condition}")
+    logger.info(f"Guidance Scale: {args.guidance_scale}")
+    logger.info(f"Denoising Steps: {args.denoise}")
+    logger.info(f"RL Resolution: {args.rl_resolution}")
+    logger.info(f"Training Timesteps: {args.timesteps}")
+    logger.info(f"Time Scale: {args.timescale}")
+    logger.info(f"Log Directory: {args.log_dir}")
+    logger.info(f"Using an Instaflow Diffusion Pipeline: {args.instaflow}")
+    logger.info("========================================================")
     
     unity_pipeline = UnityGymPipeline(args.env_path,
                                       args.dr_yaml_path,
@@ -441,14 +444,14 @@ def main():
                                       args.log_dir,
                                       args.instaflow)
     
-    logging.info("Creating Unity environment...")
+    logger.info("Creating Unity environment...")
     unity_pipeline.create_env()
-    logging.info("Starting PPO training...")
+    logger.info("Starting PPO training...")
     model = unity_pipeline.train_ppo()
-    logging.info("Training complete. Closing environment...")
+    logger.info("Training complete. Closing environment...")
     # Uncomment to run inference without diffusion processing
     # for i in range(5):
-    #     logging.info(f"Running inference {i+1}...")
+    #     logger.info(f"Running inference {i+1}...")
     #     unity_pipeline.inference_no_diffusion()
     unity_pipeline._close()
     
