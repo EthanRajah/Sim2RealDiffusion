@@ -386,6 +386,8 @@ def main():
     parser.add_argument('--base_port', nargs='?', type=int, default=5004, help='Base port for Unity environment (default: 5004)')
     parser.add_argument('--wandb_project', type=str, default='unity_rl_pipeline', help='Weights & Biases project name for logging (default: unity_rl_pipeline)')
     parser.add_argument('--instaflow', action='store_true', help='Using Instaflow diffusion model pipeline')
+    parser.add_argument('--resume', action='store_true', help='Resume training from latest checkpoint in log directory')
+
     
     args = parser.parse_args()
 
@@ -447,7 +449,7 @@ def main():
     logger.info("Creating Unity environment...")
     unity_pipeline.create_env()
     logger.info("Starting PPO training...")
-    model = unity_pipeline.train_ppo()
+    unity_pipeline.train_ppo(args.resume)
     logger.info("Training complete. Closing environment...")
     # Uncomment to run inference without diffusion processing
     # for i in range(5):
